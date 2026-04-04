@@ -1,0 +1,245 @@
+---
+name: diagnose
+description: |
+  系统性调试：先定位根因再修代码，修完自行验证。
+  当用户报告 bug、错误、异常行为时主动触发。
+  触发词：修一下、有个bug、报错了、不工作、出问题、线上问题、用户反馈、怎么回事、挂了。
+  即使用户只是贴了一段报错日志没说别的，也应该触发。
+---
+
+# 系统性调试
+
+你是一个严谨的调试工程师。你的工作不是"试着改改看"，而是**找到根因、精确修复、验证通过**。
+
+## 为什么需要这个流程
+
+Agent 最常见的失败模式：收到 bug 描述 → 凭理解直接改代码 → 改不对 → 再改 → 循环。
+根因是跳过了证据收集——没有日志、没有复现、没有数据，全靠猜。
+猜对的概率远低于你的自信程度。这个流程用证据替代猜测。
+
+## 四个阶段
+
+每个阶段有明确的入口条件。没完成上一个阶段，不进入下一个。
+
+---
+
+### Phase 1: 证据收集
+
+**在这个阶段，不修改任何源代码。** 你的唯一目标是理解"到底发生了什么"。
+
+#### 1a. 解析问题描述
+
+仔细读用户的描述，提取：
+- **现象**：用户看到了什么？期望看到什么？
+- **触发条件**：什么操作触发的？每次都能复现吗？
+- **时间线索**：什么时候开始的？最近改过什么？
+
+如果描述模糊，先问清楚再继续——不要脑补细节。
+
+#### 1b. 收集证据
+
+按优先级使用项目的诊断工具链：
+
+**服务端问题：**
+
+```bash
+# 1. 查服务器日志（按关键词/会话ID/时间段过滤）
+grep "关键词" server/data/server.log | tail -50
+grep "C:{convId}" server/data/server.log
+
+# 2. 导出完整会话报告（会话级问题时）
+node server/scripts/export-session.js {convId}
+# 产出: data/session_cases/conv-{id}.md
+
+# 3. 直接查数据库
+sqlite3 server/data/app.db "
+  SELECT tool_name, is_error, error_source, created_at
+  FROM tool_calls
+  WHERE conversation_id = {id}
+  ORDER BY created_at DESC
+  LIMIT 20
+"
+
+# 4. 查最近代码变更
+git log --oneline -20
+git log --oneline --since="2 days ago" -- server/src/
+```
+
+**客户端问题：**
+
+```bash
+# 1. 查构建产物是否正常
+npm run build 2>&1 | tail -20
+
+# 2. 查相关组件的最近改动
+git log --oneline -10 -- client/src/
+```
+
+**WebSocket 问题：**
+
+```bash
+# 1. 查 WebSocket event logs
+sqlite3 server/data/app.db "
+  SELECT event_type, payload, created_at
+  FROM websocket_events
+  WHERE user_id = {id}
+  ORDER BY created_at DESC
+  LIMIT 20
+"
+
+# 2. 查 WebSocket 会话状态
+sqlite3 server/data/app.db "
+  SELECT * FROM websocket_sessions
+  WHERE user_id = {id}
+  ORDER BY created_at DESC
+  LIMIT 5
+"
+```
+
+#### 1c. 读相关源码
+
+根据证据指向的区域，读代码理解当前行为。不要只看"出错的那一行"——理解调用链：谁调用了它、它调用了谁、数据从哪来。
+
+#### 1d. 汇报发现
+
+向用户简要汇报：
+- 收集到了什么证据
+- 证据指向什么方向
+- 还有什么不确定的
+
+**Phase 1 完成标志**：你能用证据（不是猜测）回答"为什么会出现这个现象"。
+
+---
+
+### Phase 2: 假设验证
+
+#### 2a. 形成假设
+
+基于 Phase 1 的证据，明确陈述：
+
+> "我认为根因是 X，因为证据 Y 和 Z 指向它。"
+
+假设必须是可验证的——能通过代码阅读、日志查找或最小实验确认或否定。
+
+#### 2b. 验证
+
+用最小代价验证假设：
+- 读代码确认逻辑是否如假设所述
+- 查 git blame 确认是否最近改动引入
+- 如果需要，加一行 console.log 确认数据流（验证后删除）
+
+#### 2c. 假设失败时
+
+假设被否定是正常的——说明你排除了一个方向。回到 Phase 1 补充证据，形成新假设。
+
+**三次熔断**：如果连续 3 个假设都被否定，停下来。这通常意味着：
+- 你对系统的理解有盲区——需要更广泛地读代码
+- 问题不在你以为的组件里——需要追溯更上游
+- 可能是架构层面的问题——告诉用户你的发现，讨论方向
+
+不要尝试第 4 个假设。
+
+---
+
+### Phase 3: 最小修复
+
+#### 3a. 修复原则
+
+- **修根因，不修症状**。如果错误是上游传了错误参数，修上游，不在下游加 if 判断
+- **一次只改一个东西**。多处改动无法隔离哪个修复真正生效
+- **不做顺手优化**。"既然打开了这个文件，顺便重构一下"——不要。这引入额外风险，和 bug 修复混在一起无法回滚
+
+#### 3b. 记录改动
+
+改完后自己说清楚：改了哪个文件的哪个逻辑，为什么这个改动能解决 Phase 2 确认的根因。
+
+---
+
+### Phase 4: 验证与回归
+
+**不跑验证就不能说"已修复"。**
+
+#### 4a. 必跑验证
+
+```bash
+# 类型检查 + 构建
+npm run build
+
+# 单元 + 集成测试
+npm run test
+```
+
+如果两个都通过，继续 staging 验证。如果失败，回到 Phase 3 修复——不要跳过失败的测试。
+
+#### 4b. Staging 复现验证
+
+修复通过构建和测试后，在 staging 环境中复现原始 bug 场景，确认问题已修复。
+
+```bash
+# 重建 staging（构建最新代码 + 重启）
+bash scripts/staging.sh rebuild
+```
+
+等待 staging 健康检查通过后，根据 bug 类型选择验证方式：
+
+| Bug 类型 | 验证方式 |
+|---------|---------|
+| UI 交互问题 | 用 `agent-browser` 打开 `http://localhost:$STAGING_PORT` → 复现用户报告的操作序列 → 确认问题已修复 |
+| API / 后端问题 | 用 `curl` 或 `npx playwright test` 对 staging 端口发请求，验证响应正确 |
+| 上下文工程问题 | 用 `agent-browser` 登录 staging → 发送触发 bug 的 prompt → 检查 Agent 回复和 `server/data/staging.log` 中的工具调用记录 |
+
+agent-browser 操作参考序列：
+1. `agent-browser open http://localhost:$STAGING_PORT` — 打开 staging
+2. `agent-browser wait --load networkidle` — 等待页面加载
+3. `agent-browser snapshot -i` — 获取页面元素
+4. 按需执行 fill / click / eval 复现 bug 场景
+5. `agent-browser snapshot -i` — 确认修复后的状态
+6. `agent-browser close` — 关闭浏览器
+
+如果 staging 复现确认问题已修复，继续 4c。如果仍能复现 bug，回到 Phase 2 重新分析。
+
+#### 4c. 针对性验证
+
+根据改动影响范围选择：
+
+| 改动范围 | 额外验证 |
+|---------|---------|
+| API 路由 / 中间件 | 相关的 integration test |
+| 前端组件 | `npm run test:e2e`（如果有对应 E2E 用例） |
+| Agent 核心 | 用 export-session 对比修复前后的行为 |
+| Cluster / 部署 | 检查 deploy.sh 流程是否受影响 |
+
+验证全部完成后，向用户报告：
+1. **根因**：一句话说清楚问题出在哪
+2. **修复**：改了什么、为什么
+3. **验证结果**：跑了哪些测试、全部通过
+4. **影响范围**：这个改动还会影响什么（如果有的话）
+
+---
+
+## 常见 bug 模式速查
+
+遇到以下现象时，优先检查对应方向：
+
+| 现象 | 优先检查 |
+|------|---------|
+| "刚才还好的，突然不行了" | `git log --oneline -5`，最近提交引入了什么 |
+| SSE 事件流中断 / 消息丢失 | `server/src/api/` 中的 SSE 路由，response 是否正确 flush |
+| Agent 回复异常 / 工具调用失败 | `tool_calls` 表的 `is_error` 和 `error_source` |
+| WebSocket 断连 | WebSocket event logs + `websocket_sessions` 表的过期时间 |
+| 热重载后行为异常 | Cluster 环境变量陷阱——worker 继承 master 旧 env |
+| 构建通过但运行时报错 | TypeScript 类型擦除导致的运行时类型不匹配 |
+| 只有特定用户有问题 | 检查 `whitelist`、`rate_limits`、用户的 workspace 配置 |
+
+## 你会想跳过流程的时刻
+
+这些想法出现时，恰恰说明你需要这个流程：
+
+| 你在想 | 实际情况 |
+|--------|---------|
+| "原因很明显，直接改就行" | 明显的原因经常是症状，不是根因 |
+| "先快速修一下，之后再调查" | "之后"永远不会来，快速修复变成永久补丁 |
+| "我看了代码，大概知道了" | "大概"在调试中等于"不知道"。找到证据 |
+| "加个 try-catch 就好了" | try-catch 隐藏问题，不解决问题 |
+| "改了好几次了，再试一次" | 已经到了三次熔断，该停下来重新分析 |
+| "测试太慢了，手动验证一下" | 手动验证遗漏回归，测试不会 |

@@ -1,0 +1,7 @@
+{
+  "name": "tl-workflows",
+  "version": "1.0.0",
+  "description": "Production-tested agentic workflows for Claude Code: brainstorm → plan → auto-execute → finish. Includes session optimization, systematic debugging, and safety hooks.",
+  "author": "tl-workflows contributors",
+  "license": "MIT"
+}
