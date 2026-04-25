@@ -38,63 +38,34 @@ Agent 最常见的失败模式：收到 bug 描述 → 凭理解直接改代码 
 
 #### 1b. 收集证据
 
-按优先级使用项目的诊断工具链：
+按优先级从四个方向收集：
 
-**服务端问题：**
-
+**1. 日志**
 ```bash
-# 1. 查服务器日志（按关键词/会话ID/时间段过滤）
-grep "关键词" server/data/server.log | tail -50
-grep "C:{convId}" server/data/server.log
+# 按关键词、时间段或会话 ID 过滤应用日志
+grep "关键词" <log-path> | tail -50
+```
+日志是最直接的证据来源。先确定项目的日志路径和格式，再用 grep 定位相关条目。
 
-# 2. 导出完整会话报告（会话级问题时）
-node server/scripts/export-session.js {convId}
-# 产出: data/session_cases/conv-{id}.md
-
-# 3. 直接查数据库
-sqlite3 server/data/app.db "
-  SELECT tool_name, is_error, error_source, created_at
-  FROM tool_calls
-  WHERE conversation_id = {id}
-  ORDER BY created_at DESC
-  LIMIT 20
-"
-
-# 4. 查最近代码变更
+**2. 最近代码变更**
+```bash
 git log --oneline -20
-git log --oneline --since="2 days ago" -- server/src/
+git log --oneline --since="2 days ago" -- <suspected-directory>/
 ```
+如果是"刚才还好的，突然不行了"类问题，这往往直接指向根因。
 
-**客户端问题：**
+**3. 数据库 / 持久化层**
 
+如果项目有数据库，查询相关记录确认数据状态。重点关注：
+- 最近的操作记录是否符合预期
+- 关联数据是否一致
+- 时间线是否和问题发生时间吻合
+
+**4. 构建与类型检查**
 ```bash
-# 1. 查构建产物是否正常
 npm run build 2>&1 | tail -20
-
-# 2. 查相关组件的最近改动
-git log --oneline -10 -- client/src/
 ```
-
-**WebSocket 问题：**
-
-```bash
-# 1. 查 WebSocket event logs
-sqlite3 server/data/app.db "
-  SELECT event_type, payload, created_at
-  FROM websocket_events
-  WHERE user_id = {id}
-  ORDER BY created_at DESC
-  LIMIT 20
-"
-
-# 2. 查 WebSocket 会话状态
-sqlite3 server/data/app.db "
-  SELECT * FROM websocket_sessions
-  WHERE user_id = {id}
-  ORDER BY created_at DESC
-  LIMIT 5
-"
-```
+排除编译/构建层面的基础问题。
 
 #### 1c. 读相关源码
 
@@ -169,34 +140,29 @@ npm run build
 npm run test
 ```
 
-如果两个都通过，继续 staging 验证。如果失败，回到 Phase 3 修复——不要跳过失败的测试。
+如果两个都通过，继续测试环境验证。如果失败，回到 Phase 3 修复——不要跳过失败的测试。
 
-#### 4b. Staging 复现验证
+#### 4b. 测试环境复现验证
 
-修复通过构建和测试后，在 staging 环境中复现原始 bug 场景，确认问题已修复。
+修复通过构建和测试后，在测试环境中复现原始 bug 场景，确认问题已修复。
 
-```bash
-# 重建 staging（构建最新代码 + 重启）
-bash scripts/staging.sh rebuild
-```
-
-等待 staging 健康检查通过后，根据 bug 类型选择验证方式：
+确保测试环境运行最新代码并通过健康检查后，根据 bug 类型选择验证方式：
 
 | Bug 类型 | 验证方式 |
 |---------|---------|
-| UI 交互问题 | 用 `agent-browser` 打开 `http://localhost:$STAGING_PORT` → 复现用户报告的操作序列 → 确认问题已修复 |
-| API / 后端问题 | 用 `curl` 或 `npx playwright test` 对 staging 端口发请求，验证响应正确 |
-| 上下文工程问题 | 用 `agent-browser` 登录 staging → 发送触发 bug 的 prompt → 检查 Agent 回复和 `server/data/staging.log` 中的工具调用记录 |
+| UI 交互问题 | 用 `agent-browser` 打开测试环境 → 复现用户报告的操作序列 → 确认问题已修复 |
+| API / 后端问题 | 用 `curl` 或 `npx playwright test` 对测试环境发请求，验证响应正确 |
+| 上下文工程问题 | 用 `agent-browser` 登录测试环境 → 发送触发 bug 的 prompt → 检查 Agent 回复和工具调用日志 |
 
 agent-browser 操作参考序列：
-1. `agent-browser open http://localhost:$STAGING_PORT` — 打开 staging
+1. `agent-browser open http://localhost:$TEST_PORT` — 打开测试环境
 2. `agent-browser wait --load networkidle` — 等待页面加载
 3. `agent-browser snapshot -i` — 获取页面元素
 4. 按需执行 fill / click / eval 复现 bug 场景
 5. `agent-browser snapshot -i` — 确认修复后的状态
 6. `agent-browser close` — 关闭浏览器
 
-如果 staging 复现确认问题已修复，继续 4c。如果仍能复现 bug，回到 Phase 2 重新分析。
+如果测试环境复现确认问题已修复，继续 4c。如果仍能复现 bug，回到 Phase 2 重新分析。
 
 #### 4c. 针对性验证
 
@@ -224,12 +190,11 @@ agent-browser 操作参考序列：
 | 现象 | 优先检查 |
 |------|---------|
 | "刚才还好的，突然不行了" | `git log --oneline -5`，最近提交引入了什么 |
-| SSE 事件流中断 / 消息丢失 | `server/src/api/` 中的 SSE 路由，response 是否正确 flush |
-| Agent 回复异常 / 工具调用失败 | `tool_calls` 表的 `is_error` 和 `error_source` |
-| WebSocket 断连 | WebSocket event logs + `websocket_sessions` 表的过期时间 |
-| 热重载后行为异常 | Cluster 环境变量陷阱——worker 继承 master 旧 env |
-| 构建通过但运行时报错 | TypeScript 类型擦除导致的运行时类型不匹配 |
-| 只有特定用户有问题 | 检查 `whitelist`、`rate_limits`、用户的 workspace 配置 |
+| 数据流中断 / 消息丢失 | 流式响应（SSE/WebSocket）的 flush 和关闭逻辑 |
+| 构建通过但运行时报错 | 类型擦除、环境变量缺失、动态导入路径错误 |
+| 只有特定用户有问题 | 权限、配额、用户级配置差异 |
+| 热重载后行为异常 | 子进程是否继承了旧的环境变量或缓存 |
+| 间歇性失败 | 竞态条件、超时阈值、外部依赖不稳定 |
 
 ## 你会想跳过流程的时刻
 

@@ -205,22 +205,16 @@ git diff main...HEAD --stat
 确认所有改动已合并到 main，worktree 无残留未提交内容。
 
 **部署后验证（仅在阶段四执行了部署时）：**
-```bash
-curl -s http://127.0.0.1:$MGMT_PORT/status
-```
-确认 worker 状态正常。如本次涉及 DB schema 变更，确认迁移已成功执行。
+
+通过健康检查端点确认服务状态正常。如本次涉及 DB schema 变更，确认迁移已成功执行。
 
 ### 6b. 变更范围分析
 
 从 git diff 推导本次变更影响哪些 E2E 测试。
 
-**Step 1: 重建 Staging 环境**
+**Step 1: 准备测试环境**
 
-```bash
-bash scripts/staging.sh rebuild
-```
-
-等待 rebuild 完成并确认健康检查通过（`curl -sf http://localhost:$STAGING_PORT/api/health`）。
+确保测试环境运行最新代码并通过健康检查。具体方式取决于项目配置（如重建 staging、重启 dev server 等）。
 
 **Step 2: 获取变更文件列表**
 
@@ -228,17 +222,20 @@ bash scripts/staging.sh rebuild
 git diff main~1...main --name-only
 ```
 
-**Step 3: 按映射表确定需要运行的测试**
+**Step 3: 按映射规则确定需要运行的测试**
 
-| 变更路径 | Playwright 测试文件 | agent-browser 验收场景 |
-|---------|--------------------|-----------------------|
-| `server/src/auth/` | `e2e/auth.spec.ts`, `e2e/security.spec.ts` | 登录流程验证 |
-| `server/src/api/conversations` | `e2e/chat.spec.ts` | 对话创建、列表、消息 |
-| `server/src/api/`（其他） | `e2e/api-v1.spec.ts` | API 端点验证 |
-| `client/src/` | 视变更组件而定 | UI 交互验证 |
-| `shared/` | 视变更模块而定 | 视影响而定 |
+根据变更文件路径推导需要运行的 E2E 测试。映射规则示例：
 
-如果变更文件全部属于 `.claude/commands/`、`data/`、`*.md`、`scripts/`（不涉及运行时代码），跳过 6c-6e，直接进入阶段七。
+| 变更路径模式 | 对应测试 | 验收场景 |
+|-------------|---------|---------|
+| 认证/权限相关模块 | 认证测试 + 安全测试 | 登录流程验证 |
+| API 路由/控制器 | 对应的 API 测试 | 端点功能验证 |
+| 前端组件/页面 | 视变更组件而定 | UI 交互验证 |
+| 共享模块/工具库 | 视影响范围而定 | 视影响而定 |
+
+> 根据项目实际的目录结构和测试文件组织方式，定制具体的映射表。
+
+如果变更文件全部属于文档、配置、脚本等非运行时代码，跳过 6c-6e，直接进入阶段七。
 
 ### 6c. Playwright 自动化测试
 
@@ -263,27 +260,27 @@ npx playwright test {mapped_test_files}
 **操作序列参考：**
 
 ```
-npx agent-browser open http://localhost:$STAGING_PORT
+npx agent-browser open http://localhost:$TEST_PORT
 npx agent-browser wait --load networkidle
-npx agent-browser eval "fetch('/auth/dev-login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'dev@example.com'})})"
-npx agent-browser wait --load networkidle
+# 执行项目特定的登录流程（如 dev-login API、OAuth mock 等）
 npx agent-browser snapshot -i
-npx agent-browser fill "@textarea_element" "测试消息内容"
-npx agent-browser click "@send_button"
-npx agent-browser wait --text "Agent 回复标志" --timeout 60000
+# 根据 snapshot 中的元素引用 @eN 执行交互
+npx agent-browser fill "@input_element" "测试内容"
+npx agent-browser click "@submit_button"
+npx agent-browser wait --text "预期结果标志" --timeout 60000
 npx agent-browser snapshot -i
 npx agent-browser screenshot
 npx agent-browser close
 ```
 
-（以上为参考模板，实际元素引用 `@eN` 需从 snapshot 输出中获取。）
+（以上为参考模板，实际元素引用 `@eN` 需从 snapshot 输出中获取。根据项目实际的认证方式和 UI 结构定制操作序列。）
 
 **硬检查——日志事实验证：**
 
 根据 6b 映射表中标注的 agent-browser 验收场景，执行浏览器交互后：
 
-1. 读取 staging 日志，从最新的会话日志中查找工具调用记录
-2. 检查是否调用了预期的工具（如 Read、Bash、Grep）、是否路由到了预期的目录
+1. 读取测试环境日志，从最新的会话日志中查找工具调用记录
+2. 检查是否调用了预期的工具、是否路由到了预期的目录
 3. 这些是客观事实——pass/fail 明确。**失败 = 硬阻断**，必须修复后才能继续
 
 **软检查——AI 回复质量评估：**

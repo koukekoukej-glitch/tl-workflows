@@ -26,19 +26,19 @@ description: |
 
 1. 确认 plan 文件路径。如果用户未指定，扫描 `data/todo/` 寻找包含 `### 验收场景` 区块的 plan 文件，列出供用户选择。
 2. 读取 plan 文件，提取 `### 验收场景` 区块（包含「功能验收」和「上下文工程验收」两个子区块）。如果 plan 文件没有验收场景区块，报告错误并终止。
-3. 重建 staging 环境：
+3. 重建测试环境，确保运行最新代码：
 
 ```bash
-bash scripts/staging.sh rebuild
+# 根据项目配置执行环境重建（如 staging rebuild、docker compose up 等）
 ```
 
-4. 等待 rebuild 完成，确认健康检查通过：
+4. 等待重建完成，确认健康检查通过：
 
 ```bash
-curl -sf http://localhost:$STAGING_PORT/api/health && echo "Staging healthy"
+curl -sf http://localhost:$TEST_PORT/api/health && echo "Test env healthy"
 ```
 
-如果健康检查失败，检查 `server/data/staging.log` 的最后 50 行诊断问题。最多重试 2 次（stop → start），仍然失败则终止验收并报告错误。
+如果健康检查失败，检查测试环境日志诊断问题。最多重试 2 次，仍然失败则终止验收并报告错误。
 
 5. 记录本轮验收的轮次编号（首次为 round=1，打回后递增）。
 
@@ -54,15 +54,16 @@ curl -sf http://localhost:$STAGING_PORT/api/health && echo "Staging healthy"
 
 1. 从 plan 的功能验收场景中，识别涉及的功能模块。按以下映射表确定需要运行的 Playwright 测试文件：
 
-| 功能模块关键词 | Playwright 测试文件 |
-|---------------|-------------------|
-| 登录、认证、OAuth | `e2e/auth.spec.ts`, `e2e/security.spec.ts` |
-| 对话、消息、聊天 | `e2e/chat.spec.ts` |
-| API、接口 | `e2e/api-v1.spec.ts` |
-| 远程代理、workspace、文件代理 | `e2e/remote-agent.spec.ts` |
-| 安全、注入、XSS | `e2e/security.spec.ts` |
+| 功能模块关键词 | 对应测试文件 |
+|---------------|------------|
+| 认证、登录、权限 | 认证相关的 spec 文件 |
+| 核心业务流程 | 对应业务模块的 spec 文件 |
+| API、接口 | API 测试 spec 文件 |
+| 安全、注入、XSS | 安全测试 spec 文件 |
 
-如果 plan 验收场景中明确指定了 E2E 测试文件路径（如 `e2e/xxx.spec.ts`），直接使用指定路径。
+> 根据项目实际的测试文件组织方式定制映射表。
+
+如果 plan 验收场景中明确指定了 E2E 测试文件路径，直接使用指定路径。
 
 如果无法映射到具体文件，运行全部 E2E 测试：`npx playwright test`。
 
@@ -90,14 +91,12 @@ npx playwright test {mapped_test_files}
 
 2. 对每条功能验收场景，执行以下操作序列：
 
-**a. 打开并登录 staging：**
+**a. 打开并登录测试环境：**
 
 ```bash
-npx agent-browser open http://localhost:$STAGING_PORT
+npx agent-browser open http://localhost:$TEST_PORT
 npx agent-browser wait --load networkidle
-npx agent-browser eval --stdin <<'EVALEOF'
-fetch('/auth/dev-login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email:'dev@example.com'})})
-EVALEOF
+# 执行项目特定的登录流程（如 dev-login API、OAuth mock、测试账号登录等）
 npx agent-browser wait --load networkidle
 npx agent-browser snapshot -i
 ```
@@ -147,14 +146,12 @@ npx agent-browser close
 
 2. 对每条上下文工程验收场景，执行以下操作序列：
 
-**a. 登录 staging 并进入对话界面：**
+**a. 登录测试环境并进入操作界面：**
 
 ```bash
-npx agent-browser open http://localhost:$STAGING_PORT
+npx agent-browser open http://localhost:$TEST_PORT
 npx agent-browser wait --load networkidle
-npx agent-browser eval --stdin <<'EVALEOF'
-fetch('/auth/dev-login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email:'dev@example.com'})})
-EVALEOF
+# 执行项目特定的登录流程
 npx agent-browser wait --load networkidle
 npx agent-browser snapshot -i
 ```
@@ -180,10 +177,11 @@ npx agent-browser screenshot
 
 **d. 硬检查——日志事实验证：**
 
-读取 staging 日志，查找该会话的工具调用记录：
+读取测试环境日志，查找该会话的工具调用记录：
 
 ```bash
-grep "tool_use\|tool_call\|Tool:" server/data/staging.log | tail -30
+# 根据项目的日志路径和格式，搜索工具调用记录
+grep "tool_use\|tool_call\|Tool:" <test-env-log-path> | tail -30
 ```
 
 对照场景定义的硬检查项，逐一验证：
@@ -336,8 +334,8 @@ Plan 文件中的验收场景遵循以下格式（由 /brainstorm 的 Spec 模�
 ## 注意事项
 
 - **agent-browser 使用 `npx agent-browser` 调用**（未全局安装）
-- **DEV_MODE 登录**：使用 `eval` 执行 `fetch('/auth/dev-login', ...)` 完成自动登录
+- **登录方式**：根据项目配置选择自动登录方式（dev-login API、测试 token、OAuth mock 等）
 - **元素引用**：每次操作后必须重新 `snapshot -i` 获取最新的 `@eN` 引用，不要复用旧引用
 - **eval 输出**：JSON 引号可能被转义，grep 匹配时用宽松模式
-- **staging 日志路径**：`server/data/staging.log`（独立于生产 `server/data/server.log`）
+- **日志路径**：根据项目配置确定测试环境的日志路径
 - **截图保存**：使用 `npx agent-browser screenshot` 默认保存到临时目录，用于验收报告取证

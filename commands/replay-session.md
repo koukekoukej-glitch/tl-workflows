@@ -76,17 +76,20 @@ AI 驱动的智能 Replay 验证——不再机械重放所有用户消息，而
 
 根据 prompt 长度选择调用方式：
 
-**长 prompt（>= 500 字符，已写入临时文件）**：
+使用项目的 replay 工具执行重放。Replay 工具应支持：
+- 指定会话 ID 和目标轮次（默认第 1 轮）
+- 传入综合后的 prompt（通过参数或临时文件）
+- 输出结构化 JSON 结果和对比报告
+
 ```bash
-node $PROJECT_DIR/scripts/replay-session.js <id> --turn 1 --prompt-file $PROJECT_DIR/data/session_cases/.replay-prompt-<id>.tmp
+# 示例（根据项目实际的 replay 工具调整命令）
+# 短 prompt：直接传参
+replay-tool <id> --turn 1 --msg "prompt text"
+# 长 prompt：通过临时文件
+replay-tool <id> --turn 1 --prompt-file <temp-file>
 ```
 
-**短 prompt（< 500 字符）**：
-```bash
-node $PROJECT_DIR/scripts/replay-session.js <id> --turn 1 --msg "prompt text"
-```
-
-**执行策略**：使用 `Bash` 工具的 `run_in_background: true` 启动 replay 脚本。脚本完成时系统会自动通知你，无需轮询——直接继续 Phase 4。
+**执行策略**：使用 `Bash` 工具的 `run_in_background: true` 启动 replay。完成时系统会自动通知，无需轮询——直接继续 Phase 4。
 
 执行完后**删除临时 prompt 文件**（如果有）。
 
@@ -96,8 +99,8 @@ node $PROJECT_DIR/scripts/replay-session.js <id> --turn 1 --msg "prompt text"
 
 ### a) 读取输出
 
-- 读取最新的 `$PROJECT_DIR/data/session_cases/replay-<id>-*.json` 获取结构化数据（含 `metrics` 字段）
-- 读取最新的 `$PROJECT_DIR/data/session_cases/compare-<id>-*.md` 获取对比报告
+- 读取 replay 工具产出的结构化 JSON 数据（含 `metrics` 字段）
+- 读取 replay 工具产出的对比报告（Markdown 格式）
 
 ### b) 硬指标对比
 
@@ -171,8 +174,8 @@ node $PROJECT_DIR/scripts/replay-session.js <id> --turn 1 --msg "prompt text"
 
 ## 前置条件
 
-- 需要先编译服务端代码
-- 需要 Anthropic API 认证配置（复用 .env）
+- 项目需实现 replay 工具（负责创建临时会话、发送 prompt、收集 metrics）
+- 需要 API 认证配置
 - 需要先运行 `/optimize-session <id>` 生成优化记录
 
 ## 注意事项

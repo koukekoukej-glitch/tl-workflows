@@ -6,9 +6,9 @@
 
 ## Step 1：加载 Session 素材
 
-1. 运行 `node server/scripts/extract-metrics.js <id>` 获取指标概览和轮次摘要
-2. 读 `data/session_cases/conv-<id>.md`（不存在则先 `node server/scripts/export-session.js <id>`）
-3. **大报告（>2000 行）**：先用 metrics 脚本定位问题轮次，只读相关轮次（Grep 搜 `### 轮次 N` 定位行号，用 offset+limit 读取）
+1. 获取会话的指标概览和轮次摘要（通过 `/export-session <id>` 导出，或读取已导出的报告文件）
+2. 读取导出的会话报告（Markdown 格式）
+3. **大报告（>2000 行）**：先从指标概览定位问题轮次，只读相关轮次（Grep 搜 `### 轮次 N` 定位行号，用 offset+limit 读取）
 4. **检查数据完备性**：报告开头的"数据完备性"章节说明了哪些数据被截断。对关键决策点涉及的截断工具返回，用 `input_json` 重放还原完整结果后再做归因。
 
 ## Step 2：第一视角还原
@@ -31,7 +31,7 @@
    - **信息冗余**：模型能自行发现的信息占据上下文，干扰决策
    - **推理偏差**：信息充分但 Agent 仍判断错误（修改上下文帮助有限）
 
-> **SDK 约束排除**：Agent 的失败如果是因为工具不可用或路径受限，这是 SDK 配置问题，不归因到上下文工程。参考 `references/harness-profile.md` 确认约束边界。
+> **SDK 约束排除**：Agent 的失败如果是因为工具不可用或路径受限，这是 SDK 配置问题，不归因到上下文工程。确认约束边界时，参考项目的 Agent 运行环境配置（工具白名单、路径限制、超时设置等）。
 
 ## Step 3：评估最终结果
 
@@ -109,8 +109,8 @@
 
 ### 执行修改（用户确认后）
 
-- **CWD side**: Modify files in Agent working directory using absolute paths
-- **SDK 侧**：修改本项目源码
+- 修改上下文工程相关文件（CLAUDE.md、rules、docs 等）
+- 如涉及 Agent 运行环境配置，同步修改对应的配置文件
 - 修改后对照四重检验做最终确认
 
 ### 写入优化记录
